@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Тренажёр КАСКОР</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+</head>
+<body>
+
+<input type="file" id="importFileInput" accept=".json" style="display:none" onchange="importDB(this)">
+<div id="toastNotif" class="toast"></div>
+
+<!-- ===== HEADER ===== -->
+<header>
+  <button class="back-btn" id="backBtn" onclick="goBack()">&#8592;</button>
+  <div class="logo">&#9651; РЖД</div>
+  <div>
+    <h1 id="headerTitle">Тренажёр КАСКОР</h1>
+    <div class="subtitle" id="headerSub">Подготовка к тестированию</div>
+  </div>
+</header>
+
+<!-- ===== SCREEN: MAIN MENU ===== -->
+<div id="screenHome" class="screen active">
+  <div class="container">
+
+    <div class="menu-stats">
+      <div class="stat-item">
+        <span class="stat-value" id="statTotal">0</span>
+        <div class="stat-label">Всего вопросов</div>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="statErrors">0</span>
+        <div class="stat-label">Ошибок в базе</div>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="statSessions">0</span>
+        <div class="stat-label">Сессий пройдено</div>
+      </div>
+      <div class="stat-item">
+        <span class="stat-value" id="statImported">0</span>
+        <div class="stat-label">Импортировано</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="menu-buttons">
+        <button class="btn btn-primary" onclick="showScreen('screenAdd')">
+          <span class="btn-icon">&#43;</span> Добавить вопросы
+        </button>
+        <button class="btn btn-outline" onclick="startTraining('all')">
+          <span class="btn-icon">&#9654;</span> Все вопросы
+        </button>
+        <button class="btn btn-outline" onclick="startTraining('random45')">
+          <span class="btn-icon">&#9733;</span> Случайные 45 вопросов
+        </button>
+        <button class="btn btn-outline" onclick="startTraining('errors')">
+          <span class="btn-icon">&#9888;</span> Только ошибки
+        </button>
+        <button class="btn btn-outline" onclick="startTraining('weak')">
+          <span class="btn-icon">⚠️</span> Слабые места
+        </button>
+        <div class="divider"></div>
+        <button class="btn btn-gray" onclick="showScreen('screenOCR')">
+          <span class="btn-icon">&#128247;</span> Загрузить скриншот (OCR)
+        </button>
+        <button class="btn btn-gray" onclick="showScreen('screenList')">
+          <span class="btn-icon">&#9776;</span> Просмотр базы вопросов
+        </button>
+        <button class="btn btn-gray" onclick="showScreen('screenStats')">
+          <span class="btn-icon">📊</span> Статистика
+        </button>
+        <div class="divider"></div>
+        <button class="btn btn-gray" onclick="exportDB()">
+          <span class="btn-icon">📤</span> Экспорт базы
+        </button>
+        <button class="btn btn-gray" onclick="document.getElementById('importFileInput').click()">
+          <span class="btn-icon">📥</span> Импорт базы
+        </button>
+        <button class="btn btn-gray" onclick="exportErrors()">
+          <span class="btn-icon">⚠️</span> Экспорт только ошибки
+        </button>
+        <div class="divider"></div>
+        <button class="btn btn-danger" onclick="clearDatabase()">
+          &#128465; Очистить всю базу
+        </button>
+      </div>
+    </div>
+
+    <!-- Настройки -->
+    <div class="card settings-card">
+      <div class="card-title" style="font-size:16px;margin-bottom:12px">⚙️ Настройки тренировки</div>
+      <div class="toggle-row">
+        <span class="toggle-label-text">Перемешивать варианты ответов</span>
+        <label class="toggle-switch-wrap">
+          <input type="checkbox" id="settingShuffleOptions"
+                 aria-label="Перемешивать варианты ответов"
+                 onchange="saveSetting('shuffleOptions', this.checked)">
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label-text">Перемешивать порядок вопросов</span>
+        <label class="toggle-switch-wrap">
+          <input type="checkbox" id="settingShuffleQuestions"
+                 aria-label="Перемешивать порядок вопросов"
+                 onchange="saveSetting('shuffleQuestions', this.checked)">
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ===== SCREEN: ADD QUESTIONS ===== -->
+<div id="screenAdd" class="screen">
+  <div class="container">
+    <div class="card">
+      <div class="card-title">Добавить вопросы</div>
+      <textarea id="jsonInput" placeholder='Вставьте JSON-массив вопросов сюда...
+
+Пример формата:
+[
+  {
+    "question": "Текст вопроса?",
+    "options": ["Ответ 1", "Ответ 2", "Ответ 3"],
+    "correct": 0,
+    "explanation": "Пояснение к ответу"
+  }
+]'></textarea>
+      <div class="hint">
+        Вставьте JSON-массив вопросов. Поле <code>correct</code> — индекс правильного ответа (0, 1 или 2).
+        Новые вопросы добавятся к существующим. Дубликаты будут пропущены автоматически.
+      </div>
+      <div id="addMsg"></div>
+      <br>
+      <button class="btn btn-primary" onclick="saveQuestions()">&#128190; Сохранить вопросы</button>
+      <button class="btn btn-gray" onclick="loadExample()">&#128196; Загрузить пример (3 вопроса)</button>
+    </div>
+    <div class="card">
+      <div class="card-title" style="font-size:15px;color:var(--text-muted)">Пример JSON-формата</div>
+      <pre class="json-example">[
+  {
+    "question": "Что означает аббревиатура КАСКОР?",
+    "options": [
+      "Комплексная автоматизированная система контроля и оценки результатов",
+      "Кадровая система контроля организации работы",
+      "Компьютерная автоматизация систем корпоративной отчётности"
+    ],
+    "correct": 0,
+    "explanation": "КАСКОР — Комплексная автоматизированная система контроля и оценки результатов деятельности."
+  }
+]</pre>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SCREEN: QUESTION LIST ===== -->
+<div id="screenList" class="screen">
+  <div class="container">
+    <div class="card">
+      <div class="list-header">
+        <div class="card-title" style="margin-bottom:0">База вопросов</div>
+        <span id="listCount" class="list-count"></span>
+      </div>
+      <div id="questionListContainer" class="scrollable">
+        <div class="empty-state">
+          <div class="icon">📋</div>
+          <p>База пуста.<br>Добавьте вопросы через меню.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SCREEN: STATS ===== -->
+<div id="screenStats" class="screen">
+  <div class="container">
+    <div class="card">
+      <div class="card-title">Статистика</div>
+
+      <div class="stats-summary">
+        <div class="stat-box">
+          <span class="stat-box-val" id="statsQTotal">0</span>
+          <div class="stat-box-lbl">Всего вопросов</div>
+        </div>
+        <div class="stat-box">
+          <span class="stat-box-val val-green" id="statsCorrect">0</span>
+          <div class="stat-box-lbl">Правильных</div>
+        </div>
+        <div class="stat-box">
+          <span class="stat-box-val val-red" id="statsWrong">0</span>
+          <div class="stat-box-lbl">Неправильных</div>
+        </div>
+        <div class="stat-box">
+          <span class="stat-box-val val-blue" id="statsOverall">—</span>
+          <div class="stat-box-lbl">Общий %</div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+      <h3 class="stats-section-title">Самые сложные вопросы (топ 20)</h3>
+      <div id="hardQuestionsTable"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SCREEN: OCR ===== -->
+<div id="screenOCR" class="screen">
+  <div class="container">
+
+    <div class="card" id="ocrStepUpload">
+      <div class="card-title">Загрузить скриншот</div>
+      <div class="drop-zone" id="dropZone">
+        <input type="file" id="ocrFileInput" accept="image/*" multiple
+               title="Выберите изображения для распознавания"
+               onchange="ocrHandleFiles(this.files)">
+        <div class="dz-icon">🖼️</div>
+        <div class="dz-title">Нажмите или перетащите изображение</div>
+        <div class="dz-sub">PNG, JPG, WEBP · Можно несколько файлов сразу</div>
+      </div>
+      <div class="hint" style="margin-top:10px">
+        Сделайте скриншот вопроса из КАСКОР — сайт распознает текст и предложит создать вопрос.
+      </div>
+    </div>
+
+    <div class="card" id="ocrStepQueue" style="display:none">
+      <div class="list-header" style="margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Очередь файлов</div>
+        <button class="btn btn-sm btn-gray" onclick="ocrReset()">✕ Сбросить</button>
+      </div>
+      <div class="ocr-multi-queue" id="ocrQueue"></div>
+      <button class="btn btn-primary" id="ocrRunBtn" onclick="ocrRunAll()">🔍 Распознать все</button>
+    </div>
+
+    <div class="card" id="ocrStepProgress" style="display:none">
+      <div class="card-title" id="ocrProgressTitle">Распознавание…</div>
+      <div class="img-preview-wrap" id="ocrImgWrap" style="margin-bottom:14px"></div>
+      <div class="ocr-progress">
+        <div class="ocr-progress-bar-wrap">
+          <div class="ocr-progress-bar-fill" id="ocrProgressBar" style="width:0%"></div>
+        </div>
+        <span class="ocr-spinner">⚙️</span>
+        <div class="ocr-status" id="ocrStatus">Инициализация…</div>
+        <div class="ocr-pct" id="ocrPct">0%</div>
+      </div>
+    </div>
+
+    <div class="card" id="ocrStepBatch" style="display:none">
+      <div class="list-header" style="margin-bottom:14px">
+        <div class="card-title" style="margin-bottom:0">Найденные вопросы</div>
+        <span id="batchCount" class="list-count"></span>
+      </div>
+      <div id="batchList" class="batch-list"></div>
+      <div class="divider"></div>
+      <div class="ocr-action-row">
+        <button class="btn btn-primary" onclick="batchSaveAll()">💾 Сохранить все</button>
+        <button class="btn btn-gray" onclick="ocrReset(); showScreen('screenHome')">✕ Отмена</button>
+      </div>
+    </div>
+
+    <div class="card" id="ocrStepEdit" style="display:none">
+      <div class="list-header" style="margin-bottom:4px">
+        <div class="card-title" style="margin-bottom:0">Редактировать вопрос</div>
+        <div class="ocr-edit-counter" id="ocrEditCounter"></div>
+      </div>
+      <div class="tab-bar">
+        <button class="tab-btn active" id="tabEdit" onclick="ocrSwitchTab('edit')">✏️ Редактор</button>
+        <button class="tab-btn" id="tabRaw" onclick="ocrSwitchTab('raw')">📄 Исходный текст</button>
+      </div>
+      <div id="tabContentEdit">
+        <div class="q-form">
+          <div>
+            <label>Текст вопроса</label>
+            <textarea class="inline-ta" id="ocrQuestion" rows="3" placeholder="Текст вопроса…"></textarea>
+          </div>
+          <div>
+            <label>Варианты ответов <span class="label-note">(выберите правильный кружком слева)</span></label>
+            <div class="options-editor" id="ocrOptionsEditor"></div>
+            <button type="button" class="btn btn-sm btn-gray" style="margin-top:8px;width:auto" onclick="ocrAddOption()">+ Добавить вариант</button>
+          </div>
+          <div class="correct-hint" id="ocrCorrectHint">Правильный ответ: <span>не выбран</span></div>
+          <div>
+            <label>Пояснение <span class="label-note">(необязательно)</span></label>
+            <textarea class="inline-ta" id="ocrExplanation" rows="2" placeholder="Краткое пояснение к правильному ответу…"></textarea>
+          </div>
+        </div>
+      </div>
+      <div id="tabContentRaw" style="display:none">
+        <div class="ocr-raw" id="ocrRawText"></div>
+        <button class="btn btn-sm btn-gray" onclick="ocrSwitchTab('edit')">← Вернуться к редактору</button>
+      </div>
+      <div id="ocrSaveMsg"></div>
+      <div class="divider"></div>
+      <div class="ocr-action-row">
+        <button class="btn btn-primary" onclick="ocrSaveQuestion()">💾 Сохранить в базу</button>
+        <button class="btn btn-gray" id="ocrSkipBtn" onclick="ocrSkipToNext()">Пропустить →</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ===== SCREEN: TRAINING ===== -->
+<div id="screenTraining" class="screen">
+  <div class="container">
+    <div class="card">
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" id="progressBar" style="width:0%"></div>
+      </div>
+      <div class="progress-label">
+        <span>Вопрос <span id="qCurrent">1</span> из <span id="qTotal">0</span></span>
+        <span>&#10003; <span id="qCorrectCount">0</span> &nbsp; &#10007; <span id="qWrongCount">0</span></span>
+      </div>
+      <div class="question-text" id="questionText"></div>
+      <div class="options-list" id="optionsList"></div>
+      <div id="resultBlock" style="display:none">
+        <div id="resultBadge"></div>
+        <div class="explanation" id="explanationText"></div>
+        <button class="btn btn-primary" id="nextBtn" onclick="nextQuestion()">Следующий вопрос &rarr;</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SCREEN: RESULTS ===== -->
+<div id="screenResults" class="screen">
+  <div class="container">
+    <div class="card">
+      <div class="card-title">Результаты теста</div>
+      <div class="percent-block" id="percentBlock">
+        <div class="big" id="percentVal">0%</div>
+        <div class="sub" id="percentSub"></div>
+      </div>
+      <div class="results-grid">
+        <div class="result-stat">
+          <span class="val val-blue" id="resCTotal">0</span>
+          <div class="lbl">Всего</div>
+        </div>
+        <div class="result-stat">
+          <span class="val val-green" id="resCCorrect">0</span>
+          <div class="lbl">Правильно</div>
+        </div>
+        <div class="result-stat">
+          <span class="val val-red" id="resCWrong">0</span>
+          <div class="lbl">Ошибок</div>
+        </div>
+        <div class="result-stat">
+          <span class="val" id="resCSkipped">0</span>
+          <div class="lbl">Пропущено</div>
+        </div>
+      </div>
+      <div id="errorsSection" class="errors-section"></div>
+      <div class="divider"></div>
+      <button class="btn btn-primary" onclick="goHome()">На главную</button>
+      <button class="btn btn-outline" onclick="restartSame()">&#8635; Повторить тест</button>
+    </div>
+  </div>
+</div>
+
+<script src="script.js"></script>
+</body>
+</html>
