@@ -6,6 +6,7 @@
   <title>Тренажёр КАСКОР</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
 </head>
 <body>
 
@@ -107,6 +108,15 @@
           <input type="checkbox" id="settingShuffleQuestions"
                  aria-label="Перемешивать порядок вопросов"
                  onchange="saveSetting('shuffleQuestions', this.checked)">
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="toggle-row">
+        <span class="toggle-label-text">Автообрезка перед OCR</span>
+        <label class="toggle-switch-wrap">
+          <input type="checkbox" id="settingAutoCrop"
+                 aria-label="Автообрезка изображения перед OCR"
+                 onchange="saveSetting('autoCrop', this.checked)">
           <span class="toggle-track"></span>
         </label>
       </div>
@@ -212,32 +222,39 @@
 <div id="screenOCR" class="screen">
   <div class="container">
 
+    <!-- ШАГ 1: Загрузка -->
     <div class="card" id="ocrStepUpload">
-      <div class="card-title">Загрузить скриншот</div>
+      <div class="card-title">Загрузить скриншоты</div>
       <div class="drop-zone" id="dropZone">
-        <input type="file" id="ocrFileInput" accept="image/*" multiple
+        <input type="file" id="ocrFileInput" accept="image/*, .heic, .heif" multiple
                title="Выберите изображения для распознавания"
                onchange="ocrHandleFiles(this.files)">
         <div class="dz-icon">🖼️</div>
-        <div class="dz-title">Нажмите или перетащите изображение</div>
-        <div class="dz-sub">PNG, JPG, WEBP · Можно несколько файлов сразу</div>
+        <div class="dz-title">Нажмите или перетащите изображения</div>
+        <div class="dz-sub">JPG, PNG, HEIC, WEBP · До 200 файлов за раз</div>
       </div>
       <div class="hint" style="margin-top:10px">
-        Сделайте скриншот вопроса из КАСКОР — сайт распознает текст и предложит создать вопрос.
+        Сделайте скриншоты вопросов из КАСКОР — сайт распознает текст и предложит создать вопросы.
       </div>
     </div>
 
+    <!-- ШАГ 2: Очередь -->
     <div class="card" id="ocrStepQueue" style="display:none">
       <div class="list-header" style="margin-bottom:14px">
         <div class="card-title" style="margin-bottom:0">Очередь файлов</div>
         <button class="btn btn-sm btn-gray" onclick="ocrReset()">✕ Сбросить</button>
       </div>
+      <div class="ocr-loading-info" id="ocrLoadingInfo" style="display:none"></div>
       <div class="ocr-multi-queue" id="ocrQueue"></div>
       <button class="btn btn-primary" id="ocrRunBtn" onclick="ocrRunAll()">🔍 Распознать все</button>
     </div>
 
+    <!-- ШАГ 3: Прогресс -->
     <div class="card" id="ocrStepProgress" style="display:none">
       <div class="card-title" id="ocrProgressTitle">Распознавание…</div>
+      <div class="ocr-batch-counter-wrap">
+        <div class="ocr-batch-counter" id="ocrBatchCounter">Обработано 0 из 0</div>
+      </div>
       <div class="img-preview-wrap" id="ocrImgWrap" style="margin-bottom:14px"></div>
       <div class="ocr-progress">
         <div class="ocr-progress-bar-wrap">
@@ -249,55 +266,74 @@
       </div>
     </div>
 
+    <!-- ШАГ 4: Проверка и редактирование -->
     <div class="card" id="ocrStepBatch" style="display:none">
-      <div class="list-header" style="margin-bottom:14px">
+      <div class="list-header" style="margin-bottom:10px">
         <div class="card-title" style="margin-bottom:0">Найденные вопросы</div>
         <span id="batchCount" class="list-count"></span>
       </div>
-      <div id="batchList" class="batch-list"></div>
+
+      <div class="tab-bar" style="margin-bottom:0">
+        <button class="tab-btn active" id="tabBatchOne" onclick="batchSwitchView('one')">↔ По одному</button>
+        <button class="tab-btn"        id="tabBatchAll" onclick="batchSwitchView('all')">☰ Список</button>
+      </div>
+
+      <!-- ВИД: По одному (навигатор) -->
+      <div id="batchViewOne">
+        <div class="batch-nav-bar">
+          <button type="button" class="btn btn-sm btn-gray batch-nav-arrow" onclick="batchNavGo(-1)">← Пред.</button>
+          <span class="batch-nav-pos" id="batchNavPos">1 / 0</span>
+          <button type="button" class="btn btn-sm btn-gray batch-nav-arrow" onclick="batchNavGo(1)">След. →</button>
+        </div>
+        <div id="batchNavStatus" class="batch-nav-status"></div>
+        <div class="batch-nav-img" id="batchNavImgPane"></div>
+
+        <div class="tab-bar tab-bar-mt">
+          <button type="button" class="tab-btn active" id="tabBatchEdit" onclick="batchNavSwitchTab('edit')">✏️ Редактор</button>
+          <button type="button" class="tab-btn"        id="tabBatchRaw"  onclick="batchNavSwitchTab('raw')">📄 OCR-текст</button>
+        </div>
+
+        <div id="batchTabEdit">
+          <div class="q-form">
+            <div>
+              <label>Текст вопроса</label>
+              <textarea class="inline-ta" id="batchNavQuestion" rows="3" placeholder="Текст вопроса…"></textarea>
+            </div>
+            <div>
+              <label>Варианты ответов <span class="label-note">(кружок = правильный)</span></label>
+              <div class="options-editor" id="batchNavOptionsEditor"></div>
+              <button type="button" class="btn btn-sm btn-gray btn-add-option"
+                      onclick="batchNavAddOption()">+ Добавить вариант</button>
+            </div>
+            <div class="correct-hint" id="batchNavCorrectHint">Правильный ответ: <span>не выбран</span></div>
+            <div>
+              <label>Пояснение <span class="label-note">(необязательно)</span></label>
+              <textarea class="inline-ta" id="batchNavExplanation" rows="2" placeholder="Краткое пояснение к правильному ответу…"></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div id="batchTabRaw" style="display:none">
+          <div class="ocr-raw" id="batchNavRawText"></div>
+        </div>
+
+        <div class="divider"></div>
+        <div class="batch-item-action-row">
+          <button type="button" class="btn btn-primary" onclick="batchNavSaveCurrent()">💾 Сохранить текущий</button>
+          <button type="button" class="btn btn-gray"    onclick="batchNavSkip()">Пропустить →</button>
+          <button type="button" class="btn btn-danger"  onclick="batchNavDelete()">✕ Удалить</button>
+        </div>
+      </div>
+
+      <!-- ВИД: Список всех -->
+      <div id="batchViewAll" style="display:none">
+        <div id="batchList" class="batch-list batch-list-mt"></div>
+      </div>
+
       <div class="divider"></div>
       <div class="ocr-action-row">
         <button class="btn btn-primary" onclick="batchSaveAll()">💾 Сохранить все</button>
         <button class="btn btn-gray" onclick="ocrReset(); showScreen('screenHome')">✕ Отмена</button>
-      </div>
-    </div>
-
-    <div class="card" id="ocrStepEdit" style="display:none">
-      <div class="list-header" style="margin-bottom:4px">
-        <div class="card-title" style="margin-bottom:0">Редактировать вопрос</div>
-        <div class="ocr-edit-counter" id="ocrEditCounter"></div>
-      </div>
-      <div class="tab-bar">
-        <button class="tab-btn active" id="tabEdit" onclick="ocrSwitchTab('edit')">✏️ Редактор</button>
-        <button class="tab-btn" id="tabRaw" onclick="ocrSwitchTab('raw')">📄 Исходный текст</button>
-      </div>
-      <div id="tabContentEdit">
-        <div class="q-form">
-          <div>
-            <label>Текст вопроса</label>
-            <textarea class="inline-ta" id="ocrQuestion" rows="3" placeholder="Текст вопроса…"></textarea>
-          </div>
-          <div>
-            <label>Варианты ответов <span class="label-note">(выберите правильный кружком слева)</span></label>
-            <div class="options-editor" id="ocrOptionsEditor"></div>
-            <button type="button" class="btn btn-sm btn-gray" style="margin-top:8px;width:auto" onclick="ocrAddOption()">+ Добавить вариант</button>
-          </div>
-          <div class="correct-hint" id="ocrCorrectHint">Правильный ответ: <span>не выбран</span></div>
-          <div>
-            <label>Пояснение <span class="label-note">(необязательно)</span></label>
-            <textarea class="inline-ta" id="ocrExplanation" rows="2" placeholder="Краткое пояснение к правильному ответу…"></textarea>
-          </div>
-        </div>
-      </div>
-      <div id="tabContentRaw" style="display:none">
-        <div class="ocr-raw" id="ocrRawText"></div>
-        <button class="btn btn-sm btn-gray" onclick="ocrSwitchTab('edit')">← Вернуться к редактору</button>
-      </div>
-      <div id="ocrSaveMsg"></div>
-      <div class="divider"></div>
-      <div class="ocr-action-row">
-        <button class="btn btn-primary" onclick="ocrSaveQuestion()">💾 Сохранить в базу</button>
-        <button class="btn btn-gray" id="ocrSkipBtn" onclick="ocrSkipToNext()">Пропустить →</button>
       </div>
     </div>
 

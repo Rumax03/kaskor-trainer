@@ -99,9 +99,9 @@ function incImported(count) {
 function getSettings() {
   try {
     const s = JSON.parse(localStorage.getItem(SETTINGS_KEY));
-    return s ? { shuffleOptions: true, shuffleQuestions: true, ...s }
-             : { shuffleOptions: true, shuffleQuestions: true };
-  } catch { return { shuffleOptions: true, shuffleQuestions: true }; }
+    return s ? { shuffleOptions: true, shuffleQuestions: true, autoCrop: true, ...s }
+             : { shuffleOptions: true, shuffleQuestions: true, autoCrop: true };
+  } catch { return { shuffleOptions: true, shuffleQuestions: true, autoCrop: true }; }
 }
 
 function saveSettings(s) {
@@ -115,11 +115,13 @@ function saveSetting(key, value) {
 }
 
 function initSettingsUI() {
-  const s = getSettings();
+  const s  = getSettings();
   const so = document.getElementById('settingShuffleOptions');
   const sq = document.getElementById('settingShuffleQuestions');
+  const ac = document.getElementById('settingAutoCrop');
   if (so) so.checked = s.shuffleOptions;
   if (sq) sq.checked = s.shuffleQuestions;
+  if (ac) ac.checked = s.autoCrop !== false;
 }
 
 // =============================================
@@ -773,12 +775,29 @@ function shuffle(arr) {
 // =============================================
 
 let ocrQueue         = [];
-let ocrEditIdx       = 0;
 let ocrWorker        = null;
 let ocrCurrentRunIdx = 0;
-let ocrInBatchMode   = false;
 let ocrBatchDrafts   = [];
-let ocrBatchEditIdx  = -1;
+let ocrBatchNavIdx   = 0;
+
+// ---------- Хелперы File/Blob → DataURL ----------
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = e => resolve(e.target.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload  = e => resolve(e.target.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
 
 // ---------- Drag & drop ----------
 (function initDragDrop() {
@@ -792,34 +811,68 @@ let ocrBatchEditIdx  = -1;
   dz.addEventListener('drop', e => ocrHandleFiles(e.dataTransfer.files));
 })();
 
-// ---------- Приём файлов ----------
-function ocrHandleFiles(files) {
+// ---------- Приём файлов (async, HEIC/HEIF support) ----------
+async function ocrHandleFiles(files) {
   if (!files || !files.length) return;
-  const arr = Array.from(files).filter(f => f.type.startsWith('image/'));
-  if (!arr.length) { alert('Выберите файлы изображений (PNG, JPG, WEBP).'); return; }
+
+  const isAllowed = f => {
+    const type = (f.type || '').toLowerCase();
+    const name = f.name.toLowerCase();
+    return type.startsWith('image/') || /\.(jpg|jpeg|png|heic|heif|webp)$/.test(name);
+  };
+
+  const arr = Array.from(files).filter(isAllowed);
+  if (!arr.length) { alert('Выберите файлы изображений (JPG, PNG, HEIC, WEBP).'); return; }
+
+  if (arr.length > 200) {
+    if (!confirm(`Выбрано ${arr.length} файлов. Обработка займёт значительное время. Продолжить?`)) return;
+  }
 
   ocrQueue = [];
-  let loaded = 0;
-  arr.forEach((file, i) => {
-    const reader = new FileReader();
-    reader.onload = e => {
-      ocrQueue[i] = { file, dataUrl: e.target.result, status: 'wait', rawText: '' };
-      loaded++;
-      if (loaded === arr.length) ocrShowQueue();
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
-// ---------- Очередь ----------
-function ocrShowQueue() {
-  setHeader('Загрузить скриншот', ocrQueue.length + ' файл(ов)');
   ocrSetStep('queue');
+  document.getElementById('ocrQueue').innerHTML = '';
+
+  const runBtn   = document.getElementById('ocrRunBtn');
+  const loadInfo = document.getElementById('ocrLoadingInfo');
+  runBtn.disabled    = true;
+  runBtn.textContent = 'Загрузка файлов…';
+  if (loadInfo) { loadInfo.style.display = ''; loadInfo.textContent = `Загрузка 0 из ${arr.length}…`; }
+
+  for (let i = 0; i < arr.length; i++) {
+    const file   = arr[i];
+    const isHeic = /\.(heic|heif)$/i.test(file.name) ||
+                   file.type === 'image/heic' ||
+                   file.type === 'image/heif';
+
+    if (loadInfo) loadInfo.textContent = `Загрузка ${i + 1} из ${arr.length}…`;
+
+    try {
+      let dataUrl;
+      if (isHeic && typeof heic2any !== 'undefined') {
+        const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.85 });
+        const blob = Array.isArray(converted) ? converted[0] : converted;
+        dataUrl = await blobToDataUrl(blob);
+      } else {
+        dataUrl = await fileToDataUrl(file);
+      }
+      ocrQueue.push({ file, dataUrl, status: 'wait', rawText: '' });
+    } catch (e) {
+      console.warn('Ошибка загрузки:', file.name, e);
+      ocrQueue.push({ file, dataUrl: '', status: 'err', rawText: '', loadError: true });
+    }
+  }
+
+  if (loadInfo) loadInfo.style.display = 'none';
+  runBtn.disabled    = false;
+  runBtn.textContent = '🔍 Распознать все';
+
+  setHeader('Загрузить скриншоты', ocrQueue.length + ' файл(ов)');
   ocrRenderQueue();
 }
 
+// ---------- Шаги OCR ----------
 function ocrSetStep(step) {
-  const steps = ['upload', 'queue', 'progress', 'batch', 'edit'];
+  const steps = ['upload', 'queue', 'progress', 'batch'];
   steps.forEach(s => {
     const el = document.getElementById('ocrStep' + s.charAt(0).toUpperCase() + s.slice(1));
     if (el) el.style.display = s === step ? 'block' : 'none';
@@ -827,13 +880,14 @@ function ocrSetStep(step) {
 }
 
 function ocrShowSteps(...active) {
-  const steps = ['upload', 'queue', 'progress', 'batch', 'edit'];
+  const steps = ['upload', 'queue', 'progress', 'batch'];
   steps.forEach(s => {
     const el = document.getElementById('ocrStep' + s.charAt(0).toUpperCase() + s.slice(1));
     if (el) el.style.display = active.includes(s) ? 'block' : 'none';
   });
 }
 
+// ---------- Очередь ----------
 function ocrRenderQueue() {
   const el = document.getElementById('ocrQueue');
   el.innerHTML = '';
@@ -848,8 +902,11 @@ function ocrRenderQueue() {
     const div = document.createElement('div');
     div.className = 'queue-item';
     div.id = 'qi_' + i;
+    const imgHtml = item.dataUrl
+      ? `<img src="${item.dataUrl}" alt="">`
+      : '<span class="qi-no-img"></span>';
     div.innerHTML = `
-      <img src="${item.dataUrl}" alt="">
+      ${imgHtml}
       <span class="qi-name">${item.file.name}</span>
       <span class="qi-status ${cls}" id="qiStatus_${i}">${label}</span>`;
     el.appendChild(div);
@@ -863,19 +920,21 @@ async function ocrRunAll() {
   runBtn.textContent = '⚙️ Идёт распознавание…';
   ocrShowSteps('queue', 'progress');
 
-  if (!ocrWorker) {
-    document.getElementById('ocrStatus').textContent = 'Загрузка движка OCR…';
-    document.getElementById('ocrPct').textContent    = '';
-    document.getElementById('ocrProgressBar').style.width = '0%';
+  const total = ocrQueue.filter(q => !q.loadError).length;
+  document.getElementById('ocrBatchCounter').textContent = `Обработано 0 из ${total}`;
+  document.getElementById('ocrStatus').textContent = 'Загрузка движка OCR…';
+  document.getElementById('ocrPct').textContent    = '';
+  document.getElementById('ocrProgressBar').style.width = '0%';
 
+  if (!ocrWorker) {
     ocrWorker = await Tesseract.createWorker('rus+eng', 1, {
       logger: m => {
         if (m.status === 'recognizing text') {
           const pct   = Math.round(m.progress * 100);
           const pctEl = document.getElementById('ocrPct');
           const barEl = document.getElementById('ocrProgressBar');
-          if (pctEl) pctEl.textContent        = pct + '%';
-          if (barEl) barEl.style.width        = pct + '%';
+          if (pctEl) pctEl.textContent = pct + '%';
+          if (barEl) barEl.style.width = pct + '%';
           const qiSt = document.getElementById('qiStatus_' + ocrCurrentRunIdx);
           if (qiSt) qiSt.textContent = '⚙️ ' + pct + '%';
         }
@@ -883,27 +942,50 @@ async function ocrRunAll() {
     });
   }
 
+  const settings = getSettings();
+  let doneCount = 0;
   for (let i = 0; i < ocrQueue.length; i++) {
-    ocrCurrentRunIdx = i;
+    if (ocrQueue[i].loadError) continue;
+    ocrCurrentRunIdx   = i;
     ocrQueue[i].status = 'run';
     ocrRenderQueue();
+
     document.getElementById('ocrProgressTitle').textContent =
       `Файл ${i + 1} из ${ocrQueue.length}: ${ocrQueue[i].file.name}`;
-    document.getElementById('ocrImgWrap').innerHTML =
-      `<img src="${ocrQueue[i].dataUrl}" alt="">`;
+    document.getElementById('ocrImgWrap').innerHTML = ocrQueue[i].dataUrl
+      ? `<img src="${ocrQueue[i].dataUrl}" alt="">` : '';
+    document.getElementById('ocrPct').textContent    = '';
+    document.getElementById('ocrProgressBar').style.width = '0%';
+
+    // ——— Предобработка: обрезка + коррекция ———
+    let imgUrl = ocrQueue[i].dataUrl;
+    if (settings.autoCrop && imgUrl) {
+      document.getElementById('ocrStatus').textContent = 'Обрезка и коррекция изображения…';
+      try {
+        imgUrl = await preprocessImageForOCR(imgUrl);
+        ocrQueue[i].preprocessedUrl = imgUrl;
+        document.getElementById('ocrImgWrap').innerHTML = `<img src="${imgUrl}" alt="">`;
+      } catch (e) {
+        console.warn('preprocess error:', e);
+      }
+    }
+
     document.getElementById('ocrStatus').textContent = 'Распознавание текста…';
     document.getElementById('ocrPct').textContent    = '0%';
     document.getElementById('ocrProgressBar').style.width = '0%';
 
     try {
-      const { data: { text } } = await ocrWorker.recognize(ocrQueue[i].dataUrl);
+      const { data: { text } } = await ocrWorker.recognize(imgUrl);
       ocrQueue[i].rawText = text;
       ocrQueue[i].status  = 'ok';
     } catch {
       ocrQueue[i].rawText = '';
       ocrQueue[i].status  = 'err';
     }
+    doneCount++;
     ocrRenderQueue();
+    document.getElementById('ocrBatchCounter').textContent =
+      `Обработано ${doneCount} из ${total}`;
   }
 
   const okCount = ocrQueue.filter(q => q.status === 'ok').length;
@@ -915,69 +997,266 @@ async function ocrRunAll() {
     return;
   }
 
-  if (okCount === 1) {
-    ocrInBatchMode = false;
-    ocrEditIdx = ocrQueue.findIndex(q => q.status === 'ok');
-    ocrOpenEditor(ocrEditIdx);
-  } else {
-    ocrShowBatch();
-  }
+  ocrShowBatch();
 }
 
 // ---------- Сброс ----------
 function ocrReset() {
-  ocrQueue        = [];
-  ocrBatchDrafts  = [];
-  ocrInBatchMode  = false;
-  ocrBatchEditIdx = -1;
+  ocrQueue       = [];
+  ocrBatchDrafts = [];
+  ocrBatchNavIdx = 0;
   ocrSetStep('upload');
   document.getElementById('ocrFileInput').value = '';
-  const runBtn = document.getElementById('ocrRunBtn');
-  if (runBtn) { runBtn.disabled = false; runBtn.textContent = '🔍 Распознать все'; }
+  const runBtn   = document.getElementById('ocrRunBtn');
+  const loadInfo = document.getElementById('ocrLoadingInfo');
+  if (runBtn)   { runBtn.disabled = false; runBtn.textContent = '🔍 Распознать все'; }
+  if (loadInfo)   loadInfo.style.display = 'none';
 }
 
-// ---------- Редактор одного вопроса ----------
-function ocrOpenEditor(idx) {
-  const item   = ocrQueue[idx];
-  const parsed = ocrParseText(item.rawText);
-  ocrShowSteps('edit');
-
-  const totalOk     = ocrQueue.filter(q => q.status === 'ok').length;
-  const remainingOk = ocrQueue.filter((q, i) => i >= idx && q.status === 'ok').length;
-  document.getElementById('ocrEditCounter').textContent =
-    totalOk > 1 ? `${totalOk - remainingOk + 1} / ${totalOk}` : '';
-
-  document.getElementById('ocrQuestion').value      = parsed.question;
-  document.getElementById('ocrExplanation').value   = '';
-  document.getElementById('ocrRawText').textContent = item.rawText;
-  document.getElementById('ocrSaveMsg').innerHTML   = '';
-
-  const skipBtn = document.getElementById('ocrSkipBtn');
-  if (skipBtn) skipBtn.style.display = '';
-
-  ocrBuildOptions(parsed.options, parsed.correct);
-  ocrSwitchTab('edit');
-  window.scrollTo(0, 0);
-}
-
-// ---------- Пакетный просмотр ----------
+// ---------- Открытие пакетного просмотра ----------
 function ocrShowBatch() {
-  ocrInBatchMode = true;
   ocrBatchDrafts = ocrQueue
     .filter(q => q.status === 'ok')
-    .map(q => ({ dataUrl: q.dataUrl, rawText: q.rawText, draft: ocrParseText(q.rawText), deleted: false }));
+    .map(q => ({
+      dataUrl: q.preprocessedUrl || q.dataUrl,
+      rawText: q.rawText,
+      draft:   ocrParseText(q.rawText),
+      deleted: false,
+      saved:   false
+    }));
+  ocrBatchNavIdx = 0;
   ocrSetStep('batch');
-  setHeader('Проверка OCR', ocrBatchDrafts.length + ' найдено');
-  ocrRenderBatch();
+  setHeader('Проверка OCR', ocrBatchDrafts.length + ' вопросов найдено');
+  batchUpdateCount();
+  batchSwitchView('one');
 }
 
+function batchUpdateCount() {
+  const active = ocrBatchDrafts.filter(d => !d.deleted).length;
+  document.getElementById('batchCount').textContent = active + ' вопр.';
+}
+
+// ---------- Переключение вида ----------
+function batchSwitchView(view) {
+  document.getElementById('batchViewOne').style.display = view === 'one' ? '' : 'none';
+  document.getElementById('batchViewAll').style.display = view === 'all' ? '' : 'none';
+  document.getElementById('tabBatchOne').classList.toggle('active', view === 'one');
+  document.getElementById('tabBatchAll').classList.toggle('active', view === 'all');
+  if (view === 'all') ocrRenderBatch();
+  if (view === 'one') batchNavRender();
+}
+
+// ---------- Навигатор (по одному) ----------
+function batchNavActiveItems() {
+  return ocrBatchDrafts.map((d, i) => ({ ...d, idx: i })).filter(d => !d.deleted);
+}
+
+function batchNavRender() {
+  const active   = batchNavActiveItems();
+  const posEl    = document.getElementById('batchNavPos');
+  const statusEl = document.getElementById('batchNavStatus');
+  const imgPane  = document.getElementById('batchNavImgPane');
+
+  if (ocrBatchNavIdx >= active.length && active.length > 0) ocrBatchNavIdx = active.length - 1;
+  if (ocrBatchNavIdx < 0) ocrBatchNavIdx = 0;
+
+  batchUpdateCount();
+
+  if (!active.length) {
+    if (posEl)    posEl.textContent = '0 / 0';
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-muted)">Все вопросы обработаны.</span>';
+    if (imgPane)  imgPane.innerHTML = '';
+    document.getElementById('batchNavQuestion').value    = '';
+    document.getElementById('batchNavExplanation').value = '';
+    document.getElementById('batchNavOptionsEditor').innerHTML = '';
+    return;
+  }
+
+  const item = active[ocrBatchNavIdx];
+  if (posEl) posEl.textContent = `${ocrBatchNavIdx + 1} / ${active.length}`;
+
+  if (imgPane) {
+    imgPane.innerHTML = item.dataUrl
+      ? `<img src="${item.dataUrl}" alt="Скриншот ${ocrBatchNavIdx + 1}">`
+      : '<div class="no-img-placeholder">Нет изображения</div>';
+  }
+
+  const rawEl = document.getElementById('batchNavRawText');
+  if (rawEl) rawEl.textContent = item.rawText || '(нет текста)';
+
+  document.getElementById('batchNavQuestion').value    = item.draft.question    || '';
+  document.getElementById('batchNavExplanation').value = item.draft.explanation || '';
+  batchNavBuildOptions(item.draft.options, item.draft.correct);
+
+  if (statusEl) {
+    if (item.saved) {
+      statusEl.innerHTML = '<span class="bnav-badge bnav-saved">✓ Сохранён в базу</span>';
+    } else if (isDuplicate(item.draft.question, getQuestions())) {
+      statusEl.innerHTML = '<span class="bnav-badge bnav-dup">⚠ Дубликат</span>';
+    } else {
+      statusEl.innerHTML = '';
+    }
+  }
+
+  batchNavSwitchTab('edit');
+}
+
+function batchNavSwitchTab(tab) {
+  const editEl  = document.getElementById('batchTabEdit');
+  const rawEl   = document.getElementById('batchTabRaw');
+  const btnEdit = document.getElementById('tabBatchEdit');
+  const btnRaw  = document.getElementById('tabBatchRaw');
+  if (editEl)  editEl.style.display  = tab === 'edit' ? '' : 'none';
+  if (rawEl)   rawEl.style.display   = tab === 'raw'  ? '' : 'none';
+  if (btnEdit) btnEdit.classList.toggle('active', tab === 'edit');
+  if (btnRaw)  btnRaw.classList.toggle('active',  tab === 'raw');
+}
+
+function batchNavGo(delta) {
+  batchNavFlushToDraft();
+  const active = batchNavActiveItems();
+  if (!active.length) return;
+  ocrBatchNavIdx = Math.max(0, Math.min(ocrBatchNavIdx + delta, active.length - 1));
+  batchNavRender();
+}
+
+function batchNavFlushToDraft() {
+  const active = batchNavActiveItems();
+  if (!active.length || ocrBatchNavIdx >= active.length) return;
+  const item = active[ocrBatchNavIdx];
+  if (!item.saved) ocrBatchDrafts[item.idx].draft = batchNavReadForm();
+}
+
+function batchNavReadForm() {
+  const question    = document.getElementById('batchNavQuestion').value.trim();
+  const explanation = document.getElementById('batchNavExplanation').value.trim();
+  const rows        = document.querySelectorAll('#batchNavOptionsEditor .option-row');
+  const options     = Array.from(rows).map(r => r.querySelector('input[type="text"]').value.trim());
+  const checked     = document.querySelector('#batchNavOptionsEditor input[type="radio"]:checked');
+  const correct     = checked ? parseInt(checked.value) : -1;
+  return { question, options, correct, explanation };
+}
+
+function batchNavSaveCurrent() {
+  const active = batchNavActiveItems();
+  if (!active.length) return;
+  const item  = active[ocrBatchNavIdx];
+  const draft = batchNavReadForm();
+  ocrBatchDrafts[item.idx].draft = draft;
+
+  if (!draft.question) { showToast('Введите текст вопроса.', 'error'); return; }
+  if (draft.options.length < 2 || draft.options.some(o => !o)) {
+    showToast('Заполните минимум 2 варианта ответа.', 'error'); return;
+  }
+  if (draft.correct === -1) { showToast('Выберите правильный ответ.', 'error'); return; }
+
+  const existing = getQuestions();
+  if (isDuplicate(draft.question, existing)) {
+    showToast('⚠ Дубликат — такой вопрос уже есть в базе.', 'error'); return;
+  }
+
+  saveQuestionsToStorage([...existing, {
+    id:          Date.now() + '_ocr_' + Math.random().toString(36).slice(2),
+    question:    draft.question,
+    options:     draft.options.filter(o => o),
+    correct:     draft.correct,
+    explanation: draft.explanation
+  }]);
+  updateStats();
+  ocrBatchDrafts[item.idx].saved = true;
+  showToast('✓ Сохранён в базу!', 'success');
+
+  // Переходим к следующему несохранённому
+  const newActive = batchNavActiveItems();
+  const nextUnsaved = newActive.findIndex((d, i) => i > ocrBatchNavIdx && !d.saved);
+  if (nextUnsaved !== -1) ocrBatchNavIdx = nextUnsaved;
+  else if (ocrBatchNavIdx < newActive.length - 1) ocrBatchNavIdx++;
+  batchNavRender();
+}
+
+function batchNavSkip() {
+  batchNavFlushToDraft();
+  const active = batchNavActiveItems();
+  if (!active.length) return;
+  if (ocrBatchNavIdx < active.length - 1) {
+    ocrBatchNavIdx++;
+    batchNavRender();
+  } else {
+    showToast('Это последний вопрос.', 'info');
+  }
+}
+
+function batchNavDelete() {
+  const active = batchNavActiveItems();
+  if (!active.length) return;
+  ocrBatchDrafts[active[ocrBatchNavIdx].idx].deleted = true;
+  const newActive = batchNavActiveItems();
+  if (ocrBatchNavIdx >= newActive.length) ocrBatchNavIdx = Math.max(0, newActive.length - 1);
+  batchNavRender();
+}
+
+// ---------- Варианты ответов навигатора ----------
+function batchNavBuildOptions(options, correctIdx) {
+  const ed = document.getElementById('batchNavOptionsEditor');
+  ed.innerHTML = '';
+  const opts = options && options.length ? options : ['', '', ''];
+  opts.forEach((opt, i) => batchNavAddOptionRow(opt, i === correctIdx));
+  batchNavUpdateCorrectHint();
+}
+
+function batchNavAddOption() { batchNavAddOptionRow('', false); }
+
+function batchNavAddOptionRow(text, checked) {
+  const ed      = document.getElementById('batchNavOptionsEditor');
+  const idx     = ed.children.length;
+  const letters = ['А', 'Б', 'В', 'Г', 'Д'];
+  const label   = letters[idx] !== undefined ? letters[idx] : String(idx + 1);
+  const row = document.createElement('div');
+  row.className = 'option-row';
+  row.innerHTML = `
+    <span class="opt-label">${label}.</span>
+    <input type="radio" name="batchNavCorrect" value="${idx}" ${checked ? 'checked' : ''}
+           onchange="batchNavUpdateCorrectHint()">
+    <input type="text" value="${(text || '').replace(/"/g, '&quot;')}" placeholder="Вариант ответа…"
+           oninput="batchNavRenumberOptions()">
+    <button type="button" class="btn-del-opt" title="Удалить"
+            onclick="batchNavRemoveOption(this)">✕</button>`;
+  ed.appendChild(row);
+  batchNavUpdateCorrectHint();
+}
+
+function batchNavRemoveOption(btn) {
+  btn.closest('.option-row').remove();
+  batchNavRenumberOptions();
+  batchNavUpdateCorrectHint();
+}
+
+function batchNavRenumberOptions() {
+  const letters = ['А', 'Б', 'В', 'Г', 'Д'];
+  document.querySelectorAll('#batchNavOptionsEditor .option-row').forEach((row, i) => {
+    row.querySelector('.opt-label').textContent =
+      (letters[i] !== undefined ? letters[i] : String(i + 1)) + '.';
+    row.querySelector('input[type="radio"]').value = i;
+  });
+}
+
+function batchNavUpdateCorrectHint() {
+  const checked = document.querySelector('#batchNavOptionsEditor input[type="radio"]:checked');
+  const hint    = document.getElementById('batchNavCorrectHint');
+  if (!checked) {
+    hint.innerHTML = 'Правильный ответ: <span>не выбран — отметьте кружком</span>';
+    return;
+  }
+  const text = checked.closest('.option-row').querySelector('input[type="text"]').value.trim();
+  hint.innerHTML = `Правильный ответ: <span>${text || '(пусто)'}</span>`;
+}
+
+// ---------- Список всех (вкладка «Список») ----------
 function ocrRenderBatch() {
   const list     = document.getElementById('batchList');
   const existing = getQuestions();
-  const active   = ocrBatchDrafts.filter(d => !d.deleted);
-  document.getElementById('batchCount').textContent = active.length + ' вопр.';
 
-  if (!active.length) {
+  if (!ocrBatchDrafts.filter(d => !d.deleted).length) {
     list.innerHTML = '<div class="empty-state"><div class="icon">📋</div><p>Нет вопросов для сохранения.</p></div>';
     return;
   }
@@ -985,20 +1264,23 @@ function ocrRenderBatch() {
   list.innerHTML = '';
   ocrBatchDrafts.forEach((item, i) => {
     if (item.deleted) return;
-    const isDup  = isDuplicate(item.draft.question, existing);
-    const noAns  = item.draft.correct === -1;
-    const div    = document.createElement('div');
-    div.className = 'batch-item' + (isDup ? ' batch-dup' : '');
-    const qText  = item.draft.question || '<em style="color:#999">Вопрос не распознан</em>';
+    const isDup   = isDuplicate(item.draft.question, existing);
+    const noAns   = item.draft.correct === -1;
+    const isSaved = item.saved;
+    const div     = document.createElement('div');
+    div.className = 'batch-item' +
+                    (isSaved ? ' batch-saved' : isDup ? ' batch-dup' : '');
+    const qText   = item.draft.question || '<em style="color:#999">Вопрос не распознан</em>';
     const optsCnt = item.draft.options.filter(o => o).length;
-    const badges  = (isDup ? '<span class="dup-badge"> · Дубликат</span>' : '') +
-                    (noAns ? '<span class="warn-badge"> · Нет правильного ответа</span>' : '');
+    const badges  = (isSaved  ? '<span class="saved-badge"> · Сохранён</span>' : '') +
+                    (isDup && !isSaved ? '<span class="dup-badge"> · Дубликат</span>' : '') +
+                    (noAns && !isSaved ? '<span class="warn-badge"> · Нет правильного ответа</span>' : '');
     div.innerHTML = `
       <div class="batch-item-q">${i + 1}. ${qText}</div>
       <div class="batch-item-opts">${optsCnt} вариантов${badges}</div>
       <div class="batch-item-actions">
-        <button class="btn btn-sm btn-outline" onclick="batchEditItem(${i})">✏️ Редактировать</button>
-        <button class="btn btn-sm btn-danger"  onclick="batchDeleteItem(${i})">✕ Удалить</button>
+        <button type="button" class="btn btn-sm btn-outline" onclick="batchListEdit(${i})">✏️ Ред.</button>
+        <button type="button" class="btn btn-sm btn-danger"  onclick="batchDeleteItem(${i})">✕</button>
       </div>`;
     list.appendChild(div);
   });
@@ -1007,27 +1289,29 @@ function ocrRenderBatch() {
 function batchDeleteItem(idx) {
   ocrBatchDrafts[idx].deleted = true;
   ocrRenderBatch();
+  batchUpdateCount();
 }
 
-function batchEditItem(idx) {
-  ocrBatchEditIdx = idx;
-  const item = ocrBatchDrafts[idx];
-  ocrShowSteps('edit');
-  document.getElementById('ocrQuestion').value      = item.draft.question;
-  document.getElementById('ocrExplanation').value   = item.draft.explanation || '';
-  document.getElementById('ocrRawText').textContent = item.rawText;
-  document.getElementById('ocrSaveMsg').innerHTML   = '';
-  document.getElementById('ocrEditCounter').textContent = `Вопрос ${idx + 1} из ${ocrBatchDrafts.length}`;
-  const skipBtn = document.getElementById('ocrSkipBtn');
-  if (skipBtn) skipBtn.style.display = 'none';
-  ocrBuildOptions(item.draft.options, item.draft.correct);
-  ocrSwitchTab('edit');
-  window.scrollTo(0, 0);
+function batchListEdit(idx) {
+  const active = batchNavActiveItems();
+  const navIdx = active.findIndex(d => d.idx === idx);
+  if (navIdx !== -1) ocrBatchNavIdx = navIdx;
+  batchSwitchView('one');
 }
 
+// ---------- Сохранить все ----------
 function batchSaveAll() {
-  const existing   = getQuestions();
-  const toSave     = ocrBatchDrafts.filter(d => !d.deleted && d.draft.question);
+  const alreadySaved = ocrBatchDrafts.filter(d => d.saved).length;
+  const toSave       = ocrBatchDrafts.filter(d => !d.deleted && !d.saved && d.draft.question);
+
+  if (!toSave.length && alreadySaved > 0) {
+    showToast(`Все вопросы уже сохранены (${alreadySaved}).`, 'success', 4000);
+    ocrReset();
+    showScreen('screenHome');
+    return;
+  }
+  if (!toSave.length) { showToast('Нет вопросов для сохранения.', 'error'); return; }
+
   const noAnsCount = toSave.filter(d => d.draft.correct === -1).length;
   if (noAnsCount) {
     if (!confirm(
@@ -1036,6 +1320,7 @@ function batchSaveAll() {
     )) return;
   }
 
+  const existing = getQuestions();
   let added = 0;
   let dupes = 0;
   const merged = [...existing];
@@ -1052,130 +1337,12 @@ function batchSaveAll() {
   }
   saveQuestionsToStorage(merged);
   updateStats();
-  let msg = `Сохранено: ${added} вопросов.`;
+
+  let msg = `Сохранено: ${added + alreadySaved} вопросов.`;
   if (dupes) msg += `\nДубликатов пропущено: ${dupes}.`;
   showToast(msg, 'success', 4000);
   ocrReset();
   showScreen('screenHome');
-}
-
-// ---------- Варианты ответов ----------
-function ocrBuildOptions(options, correctIdx) {
-  const ed = document.getElementById('ocrOptionsEditor');
-  ed.innerHTML = '';
-  const opts = options.length ? options : ['', '', ''];
-  opts.forEach((opt, i) => ocrAddOptionRow(opt, i === correctIdx));
-  ocrUpdateCorrectHint();
-}
-
-function ocrAddOption() { ocrAddOptionRow('', false); }
-
-function ocrAddOptionRow(text, checked) {
-  const ed      = document.getElementById('ocrOptionsEditor');
-  const idx     = ed.children.length;
-  const letters = ['А', 'Б', 'В', 'Г', 'Д'];
-  const label   = letters[idx] !== undefined ? letters[idx] : String(idx + 1);
-  const row = document.createElement('div');
-  row.className = 'option-row';
-  row.innerHTML = `
-    <span class="opt-label">${label}.</span>
-    <input type="radio" name="ocrCorrect" value="${idx}" ${checked ? 'checked' : ''}
-           onchange="ocrUpdateCorrectHint()">
-    <input type="text" value="${(text || '').replace(/"/g, '&quot;')}" placeholder="Вариант ответа…"
-           oninput="ocrRenumberOptions()">
-    <button type="button" class="btn-del-opt" title="Удалить"
-            onclick="ocrRemoveOption(this)">✕</button>`;
-  ed.appendChild(row);
-  ocrUpdateCorrectHint();
-}
-
-function ocrRemoveOption(btn) {
-  btn.closest('.option-row').remove();
-  ocrRenumberOptions();
-  ocrUpdateCorrectHint();
-}
-
-function ocrRenumberOptions() {
-  const letters = ['А', 'Б', 'В', 'Г', 'Д'];
-  document.querySelectorAll('#ocrOptionsEditor .option-row').forEach((row, i) => {
-    row.querySelector('.opt-label').textContent =
-      (letters[i] !== undefined ? letters[i] : String(i + 1)) + '.';
-    row.querySelector('input[type="radio"]').value = i;
-  });
-}
-
-function ocrUpdateCorrectHint() {
-  const checked = document.querySelector('#ocrOptionsEditor input[type="radio"]:checked');
-  const hint    = document.getElementById('ocrCorrectHint');
-  if (!checked) {
-    hint.innerHTML = 'Правильный ответ: <span>не выбран — отметьте кружком</span>';
-    return;
-  }
-  const text = checked.closest('.option-row').querySelector('input[type="text"]').value.trim();
-  hint.innerHTML = `Правильный ответ: <span>${text || '(пусто)'}</span>`;
-}
-
-// ---------- Вкладки ----------
-function ocrSwitchTab(tab) {
-  document.getElementById('tabContentEdit').style.display = tab === 'edit' ? 'block' : 'none';
-  document.getElementById('tabContentRaw').style.display  = tab === 'raw'  ? 'block' : 'none';
-  document.getElementById('tabEdit').classList.toggle('active', tab === 'edit');
-  document.getElementById('tabRaw').classList.toggle('active',  tab === 'raw');
-}
-
-// ---------- Сохранение из редактора ----------
-function ocrSaveQuestion() {
-  const msgEl    = document.getElementById('ocrSaveMsg');
-  const question = document.getElementById('ocrQuestion').value.trim();
-  if (!question) { showMsg(msgEl, 'Введите текст вопроса.', 'error'); return; }
-
-  const rows    = document.querySelectorAll('#ocrOptionsEditor .option-row');
-  const options = Array.from(rows).map(r => r.querySelector('input[type="text"]').value.trim());
-  if (options.length < 2)    { showMsg(msgEl, 'Нужно минимум 2 варианта ответа.', 'error'); return; }
-  if (options.some(o => !o)) { showMsg(msgEl, 'Заполните все варианты ответа.', 'error'); return; }
-
-  const checkedRadio = document.querySelector('#ocrOptionsEditor input[type="radio"]:checked');
-  if (!checkedRadio) {
-    showMsg(msgEl, 'Выберите правильный ответ (кружок слева от варианта).', 'error');
-    return;
-  }
-
-  const correct     = parseInt(checkedRadio.value);
-  const explanation = document.getElementById('ocrExplanation').value.trim();
-
-  if (ocrInBatchMode && ocrBatchEditIdx !== -1) {
-    ocrBatchDrafts[ocrBatchEditIdx].draft = { question, options, correct, explanation };
-    ocrShowSteps('batch');
-    ocrRenderBatch();
-    showToast('Вопрос обновлён.', 'success');
-    return;
-  }
-
-  const existing = getQuestions();
-  if (isDuplicate(question, existing)) {
-    showMsg(msgEl, '⚠ Такой вопрос уже есть в базе — дубликат не сохранён.', 'error');
-    return;
-  }
-
-  const q = {
-    id: Date.now() + '_ocr_' + Math.random().toString(36).slice(2),
-    question, options, correct, explanation
-  };
-  saveQuestionsToStorage([...existing, q]);
-  updateStats();
-  showMsg(msgEl, '✓ Вопрос сохранён в базу!', 'success');
-  setTimeout(() => ocrSkipToNext(), 900);
-}
-
-function ocrSkipToNext() {
-  if (ocrInBatchMode) {
-    ocrBatchEditIdx = -1;
-    ocrShowSteps('batch');
-    return;
-  }
-  const next = ocrQueue.findIndex((q, i) => i > ocrEditIdx && q.status === 'ok');
-  if (next !== -1) { ocrEditIdx = next; ocrOpenEditor(next); }
-  else { ocrReset(); showScreen('screenHome'); updateStats(); }
 }
 
 // ---------- Парсер ----------
@@ -1206,6 +1373,304 @@ function ocrParseText(raw) {
     }
   }
   return { question, options: options.length >= 2 ? options : ['', '', ''], correct: -1, explanation: '' };
+}
+
+// =============================================
+// ПРЕДОБРАБОТКА ИЗОБРАЖЕНИЙ (Canvas API)
+// =============================================
+
+const IMG_DETECT_SIZE = 800;   // px для поиска углов (быстро)
+const IMG_OUTPUT_SIZE = 1400;  // px для выходного изображения
+
+async function preprocessImageForOCR(dataUrl) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      try { resolve(processDocumentImage(img)); }
+      catch (e) { console.warn('preprocess:', e); resolve(dataUrl); }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+function processDocumentImage(img) {
+  const origW = img.naturalWidth  || img.width;
+  const origH = img.naturalHeight || img.height;
+
+  // ——— Масштаб для детектирования углов ———
+  const detS  = Math.min(1, IMG_DETECT_SIZE / Math.max(origW, origH));
+  const dw = Math.round(origW * detS);
+  const dh = Math.round(origH * detS);
+  const detCanvas = document.createElement('canvas');
+  detCanvas.width = dw; detCanvas.height = dh;
+  detCanvas.getContext('2d').drawImage(img, 0, 0, dw, dh);
+  const detData = detCanvas.getContext('2d').getImageData(0, 0, dw, dh);
+
+  // ——— Масштаб для выходного изображения ———
+  const outS  = Math.min(1, IMG_OUTPUT_SIZE / Math.max(origW, origH));
+  const ow = Math.round(origW * outS);
+  const oh = Math.round(origH * outS);
+  const srcCanvas = document.createElement('canvas');
+  srcCanvas.width = ow; srcCanvas.height = oh;
+  srcCanvas.getContext('2d').drawImage(img, 0, 0, ow, oh);
+
+  // ——— Поиск углов документа ———
+  const detCorners = findDocumentCorners(detData.data, dw, dh);
+
+  let resultCanvas;
+  if (detCorners) {
+    // Масштабируем углы с detection-размера на output-размер
+    const ratio = outS / detS;
+    const corners = detCorners.map(([x, y]) => [x * ratio, y * ratio]);
+
+    // Определяем размер результата из длин сторон quad
+    const wT = Math.hypot(corners[1][0]-corners[0][0], corners[1][1]-corners[0][1]);
+    const wB = Math.hypot(corners[2][0]-corners[3][0], corners[2][1]-corners[3][1]);
+    const hL = Math.hypot(corners[3][0]-corners[0][0], corners[3][1]-corners[0][1]);
+    const hR = Math.hypot(corners[2][0]-corners[1][0], corners[2][1]-corners[1][1]);
+    const rW = Math.min(Math.round(Math.max(wT, wB)), IMG_OUTPUT_SIZE);
+    const rH = Math.min(Math.round(Math.max(hL, hR)), IMG_OUTPUT_SIZE);
+
+    if (isPerspectiveDistorted(corners, ow, oh)) {
+      resultCanvas = warpPerspective(srcCanvas, corners, rW, rH);
+    } else {
+      // Просто прямоугольная обрезка (быстро)
+      resultCanvas = simpleCrop(srcCanvas, corners, rW, rH);
+    }
+  } else {
+    resultCanvas = srcCanvas;
+  }
+
+  // ——— Усиление контраста ———
+  return enhanceTextContrast(resultCanvas).toDataURL('image/jpeg', 0.92);
+}
+
+// ——— Поиск углов документа (сканирование краёв) ———
+function findDocumentCorners(pixels, w, h) {
+  const gray = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    gray[i] = (pixels[i*4]*77 + pixels[i*4+1]*150 + pixels[i*4+2]*29) >> 8;
+  }
+
+  const thresh = otsuThreshold(gray);
+  const STEPS  = 50;
+  const topPts = [], botPts = [], leftPts = [], rightPts = [];
+
+  for (let s = 0; s < STEPS; s++) {
+    const x = Math.round((s + 0.5) * w / STEPS);
+    for (let y = 0;     y < h;  y++) { if (gray[y*w+x] > thresh) { topPts.push([x,y]);  break; } }
+    for (let y = h-1;   y >= 0; y--) { if (gray[y*w+x] > thresh) { botPts.push([x,y]);  break; } }
+    const y2 = Math.round((s + 0.5) * h / STEPS);
+    for (let x2 = 0;   x2 < w;  x2++) { if (gray[y2*w+x2] > thresh) { leftPts.push([x2,y2]);  break; } }
+    for (let x2 = w-1; x2 >= 0; x2--) { if (gray[y2*w+x2] > thresh) { rightPts.push([x2,y2]); break; } }
+  }
+
+  if (topPts.length < 4 || botPts.length < 4 || leftPts.length < 4 || rightPts.length < 4) return null;
+
+  const topL   = fitLine(topPts),   botL  = fitLine(botPts);
+  const leftL  = fitLineV(leftPts), rightL = fitLineV(rightPts);
+  if (!topL || !botL || !leftL || !rightL) return null;
+
+  const tl = intersectLines(topL, leftL);
+  const tr = intersectLines(topL, rightL);
+  const br = intersectLines(botL, rightL);
+  const bl = intersectLines(botL, leftL);
+  if (!tl || !tr || !br || !bl) return null;
+
+  // Площадь должна быть > 15% изображения
+  const area = Math.abs((tr[0]-tl[0])*(bl[1]-tl[1]) - (bl[0]-tl[0])*(tr[1]-tl[1]));
+  if (area < w * h * 0.15) return null;
+
+  // Углы не должны быть практически на краях изображения (= нет документа на фоне)
+  const pad = w * 0.03;
+  if (tl[0]<pad && tr[0]>w-pad && bl[0]<pad && br[0]>w-pad &&
+      tl[1]<pad && tr[1]<pad   && bl[1]>h-pad && br[1]>h-pad) return null;
+
+  // Все углы должны быть в пределах изображения (с небольшим запасом)
+  const margin = 30;
+  const inBounds = ([x,y]) => x>=-margin && x<=w+margin && y>=-margin && y<=h+margin;
+  if (!inBounds(tl)||!inBounds(tr)||!inBounds(br)||!inBounds(bl)) return null;
+
+  return [tl, tr, br, bl];
+}
+
+// ——— Порог Оцу ———
+function otsuThreshold(gray) {
+  const hist = new Int32Array(256);
+  for (const v of gray) hist[v]++;
+  const n = gray.length;
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+  let sumB = 0, wB = 0, max = 0, thr = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t]; if (!wB) continue;
+    const wF = n - wB; if (!wF) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const between = wB * wF * (mB - mF) * (mB - mF);
+    if (between > max) { max = between; thr = t; }
+  }
+  return thr;
+}
+
+// ——— Линейная регрессия y=ax+b (горизонтальные линии) ———
+function fitLine(pts) {
+  const n = pts.length;
+  let sx=0, sy=0, sxx=0, sxy=0;
+  for (const [x,y] of pts) { sx+=x; sy+=y; sxx+=x*x; sxy+=x*y; }
+  const d = n*sxx - sx*sx;
+  if (Math.abs(d) < 1e-6) return { h: true, a: 0, b: sy/n };
+  return { h: true, a: (n*sxy-sx*sy)/d, b: (sy-(n*sxy-sx*sy)/d*sx)/n };
+}
+
+// ——— Линейная регрессия x=ay+b (вертикальные линии) ———
+function fitLineV(pts) {
+  const n = pts.length;
+  let sx=0, sy=0, syy=0, sxy=0;
+  for (const [x,y] of pts) { sx+=x; sy+=y; syy+=y*y; sxy+=x*y; }
+  const d = n*syy - sy*sy;
+  if (Math.abs(d) < 1e-6) return { h: false, a: 0, b: sx/n };
+  return { h: false, a: (n*sxy-sx*sy)/d, b: (sx-(n*sxy-sx*sy)/d*sy)/n };
+}
+
+// ——— Пересечение двух линий (одна горизонтальная y=ax+b, одна вертикальная x=ay+b) ———
+function intersectLines(hLine, vLine) {
+  if (!hLine || !vLine) return null;
+  // hLine: y = aH*x + bH  →  aH*x - y + bH = 0
+  // vLine: x = aV*y + bV  →  x - aV*y - bV = 0
+  // y = aH*(aV*y + bV) + bH  →  y(1 - aH*aV) = aH*bV + bH
+  const denom = 1 - hLine.a * vLine.a;
+  if (Math.abs(denom) < 1e-6) return null;
+  const y = (hLine.a * vLine.b + hLine.b) / denom;
+  const x = vLine.a * y + vLine.b;
+  return [x, y];
+}
+
+// ——— Проверка: нужна ли перспективная коррекция ———
+function isPerspectiveDistorted(corners, w, h) {
+  const [tl, tr, br, bl] = corners;
+  const topSkew   = Math.abs(tr[1] - tl[1]) / h;
+  const botSkew   = Math.abs(br[1] - bl[1]) / h;
+  const leftSkew  = Math.abs(bl[0] - tl[0]) / w;
+  const rightSkew = Math.abs(br[0] - tr[0]) / w;
+  return Math.max(topSkew, botSkew, leftSkew, rightSkew) > 0.04;
+}
+
+// ——— Простая прямоугольная обрезка (для ровных документов) ———
+function simpleCrop(srcCanvas, corners, rW, rH) {
+  const xs = corners.map(p => p[0]);
+  const ys = corners.map(p => p[1]);
+  const x0 = Math.max(0, Math.min(...xs));
+  const y0 = Math.max(0, Math.min(...ys));
+  const x1 = Math.min(srcCanvas.width,  Math.max(...xs));
+  const y1 = Math.min(srcCanvas.height, Math.max(...ys));
+  const out = document.createElement('canvas');
+  out.width = rW; out.height = rH;
+  out.getContext('2d').drawImage(srcCanvas, x0, y0, x1-x0, y1-y0, 0, 0, rW, rH);
+  return out;
+}
+
+// ——— Перспективное преобразование (pixel-by-pixel с билинейной интерполяцией) ———
+function warpPerspective(srcCanvas, corners, outW, outH) {
+  const dst = [[0,0],[outW,0],[outW,outH],[0,outH]];
+  // Вычисляем обратную гомографию: dst → src
+  const H = computeHomography(dst, corners);
+  const [h0,h1,h2, h3,h4,h5, h6,h7,h8] = H;
+
+  const sw = srcCanvas.width, sh = srcCanvas.height;
+  const srcCtx  = srcCanvas.getContext('2d');
+  const srcData = srcCtx.getImageData(0, 0, sw, sh).data;
+
+  const dstCanvas = document.createElement('canvas');
+  dstCanvas.width = outW; dstCanvas.height = outH;
+  const dstCtx  = dstCanvas.getContext('2d');
+  const dstImg  = dstCtx.createImageData(outW, outH);
+  const d = dstImg.data;
+
+  for (let dy = 0; dy < outH; dy++) {
+    for (let dx = 0; dx < outW; dx++) {
+      const ww = h6*dx + h7*dy + h8;
+      const sx = (h0*dx + h1*dy + h2) / ww;
+      const sy = (h3*dx + h4*dy + h5) / ww;
+      const pi = (dy*outW + dx) * 4;
+
+      if (sx < 0 || sy < 0 || sx >= sw-1 || sy >= sh-1) {
+        d[pi]=d[pi+1]=d[pi+2]=255; d[pi+3]=255; continue;
+      }
+      const x0=sx|0, y0=sy|0, fx=sx-x0, fy=sy-y0;
+      const i00=(y0*sw+x0)*4, i10=(y0*sw+x0+1)*4;
+      const i01=((y0+1)*sw+x0)*4, i11=((y0+1)*sw+x0+1)*4;
+      const w00=(1-fx)*(1-fy), w10=fx*(1-fy), w01=(1-fx)*fy, w11=fx*fy;
+      for (let c=0; c<3; c++) {
+        d[pi+c] = (srcData[i00+c]*w00 + srcData[i10+c]*w10 +
+                   srcData[i01+c]*w01 + srcData[i11+c]*w11 + 0.5) | 0;
+      }
+      d[pi+3] = 255;
+    }
+  }
+  dstCtx.putImageData(dstImg, 0, 0);
+  return dstCanvas;
+}
+
+// ——— Вычисление гомографии (DLT, 4 соответствия точек, h8=1) ———
+function computeHomography(src, dst) {
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [sx,sy] = src[i], [dx,dy] = dst[i];
+    A.push([-sx,-sy,-1, 0, 0, 0, dx*sx,dx*sy]); b.push(-dx);
+    A.push([ 0,  0, 0,-sx,-sy,-1, dy*sx,dy*sy]); b.push(-dy);
+  }
+  const h = solveLinear8(A, b);
+  return [...h, 1];
+}
+
+function solveLinear8(A, b) {
+  const M = A.map((row, i) => [...row, b[i]]);
+  for (let col = 0; col < 8; col++) {
+    let maxRow = col;
+    for (let row = col+1; row < 8; row++) {
+      if (Math.abs(M[row][col]) > Math.abs(M[maxRow][col])) maxRow = row;
+    }
+    [M[col], M[maxRow]] = [M[maxRow], M[col]];
+    const piv = M[col][col];
+    if (Math.abs(piv) < 1e-10) continue;
+    for (let row = 0; row < 8; row++) {
+      if (row === col) continue;
+      const f = M[row][col] / piv;
+      for (let j = col; j <= 8; j++) M[row][j] -= f * M[col][j];
+    }
+  }
+  return M.map((row, i) => row[8] / row[i]);
+}
+
+// ——— Усиление контраста: перцентильное растяжение гистограммы + grayscale ———
+function enhanceTextContrast(canvas) {
+  const ctx  = canvas.getContext('2d');
+  const iData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const d = iData.data;
+  const n = canvas.width * canvas.height;
+
+  // Вычисляем яркость каждого пикселя
+  const lum = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    lum[i] = (d[i*4]*77 + d[i*4+1]*150 + d[i*4+2]*29) >> 8;
+  }
+
+  // Перцентильное растяжение: lo=5%, hi=95%
+  const sorted = new Uint8Array(lum).sort();
+  const lo  = sorted[Math.floor(n * 0.05)];
+  const hi  = sorted[Math.floor(n * 0.95)];
+  const rng = (hi - lo) || 1;
+
+  for (let i = 0; i < n; i++) {
+    const v = ((lum[i] - lo) / rng * 255 + 0.5) | 0;
+    const c = Math.max(0, Math.min(255, v));
+    d[i*4] = d[i*4+1] = d[i*4+2] = c;
+    d[i*4+3] = 255;
+  }
+  ctx.putImageData(iData, 0, 0);
+  return canvas;
 }
 
 // =============================================
