@@ -172,15 +172,74 @@
 <div id="screenList" class="screen">
   <div class="container">
     <div class="card">
-      <div class="list-header">
+
+      <div class="list-header" style="margin-bottom:12px">
         <div class="card-title" style="margin-bottom:0">База вопросов</div>
         <span id="listCount" class="list-count"></span>
       </div>
-      <div id="questionListContainer" class="scrollable">
-        <div class="empty-state">
-          <div class="icon">📋</div>
-          <p>База пуста.<br>Добавьте вопросы через меню.</p>
+
+      <!-- Поиск -->
+      <div class="list-search-wrap">
+        <input type="search" id="listSearch" class="list-search-input"
+               placeholder="🔍 Поиск по тексту вопроса…"
+               oninput="renderList()">
+      </div>
+
+      <!-- Фильтры -->
+      <div class="list-filter-bar" id="listFilterBar">
+        <button type="button" class="filter-btn active" data-filter="all"
+                onclick="setListFilter('all')">Все</button>
+        <button type="button" class="filter-btn" data-filter="errors"
+                onclick="setListFilter('errors')">⚠ С ошибками</button>
+        <button type="button" class="filter-btn" data-filter="nostats"
+                onclick="setListFilter('nostats')">— Без статистики</button>
+        <button type="button" class="filter-btn" data-filter="unlearned"
+                onclick="setListFilter('unlearned')">📌 Неизученные</button>
+      </div>
+
+      <!-- Сортировка -->
+      <div class="list-sort-bar">
+        <span class="sort-label">Сортировка:</span>
+        <button type="button" class="sort-btn active" data-sort="num"
+                onclick="setListSort('num')">По номеру</button>
+        <button type="button" class="sort-btn" data-sort="errors"
+                onclick="setListSort('errors')">По ошибкам</button>
+        <button type="button" class="sort-btn" data-sort="correct"
+                onclick="setListSort('correct')">По правильным</button>
+      </div>
+
+      <div id="questionListContainer" class="q-list-scroll"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== SCREEN: EDIT QUESTION ===== -->
+<div id="screenEditQuestion" class="screen">
+  <div class="container">
+    <div class="card">
+      <div class="card-title">✏️ Редактировать вопрос</div>
+      <div class="q-form">
+        <div>
+          <label>Текст вопроса</label>
+          <textarea class="inline-ta" id="editQuestion" rows="4" placeholder="Текст вопроса…"></textarea>
         </div>
+        <div>
+          <label>Варианты ответов <span class="label-note">(кружок = правильный)</span></label>
+          <div class="options-editor" id="editOptionsEditor"></div>
+          <button type="button" class="btn btn-sm btn-gray btn-add-option"
+                  onclick="editAddOption()">+ Добавить вариант</button>
+        </div>
+        <div class="correct-hint" id="editCorrectHint">Правильный ответ: <span>не выбран</span></div>
+        <div>
+          <label>Пояснение <span class="label-note">(необязательно)</span></label>
+          <textarea class="inline-ta" id="editExplanation" rows="2" placeholder="Краткое пояснение к правильному ответу…"></textarea>
+        </div>
+      </div>
+      <div id="editMsg"></div>
+      <div class="divider"></div>
+      <div class="ocr-action-row">
+        <button type="button" class="btn btn-primary" onclick="saveEditQuestion()">💾 Сохранить изменения</button>
+        <button type="button" class="btn btn-gray"    onclick="goBack()">Отмена</button>
       </div>
     </div>
   </div>

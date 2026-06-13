@@ -1197,6 +1197,180 @@ textarea:focus {
 }
 
 /* =============================================
+   СПИСОК ВОПРОСОВ — ПОИСК
+   ============================================= */
+.list-search-wrap {
+  margin-bottom: 10px;
+}
+
+.list-search-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 2px solid var(--gray-border);
+  border-radius: 10px;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+  transition: border 0.15s;
+  background: white;
+}
+
+.list-search-input:focus {
+  border-color: var(--red);
+}
+
+/* =============================================
+   СПИСОК ВОПРОСОВ — ФИЛЬТРЫ
+   ============================================= */
+.list-filter-bar {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.filter-btn {
+  padding: 6px 12px;
+  border-radius: 20px;
+  border: 2px solid var(--gray-border);
+  background: white;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.filter-btn:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.filter-btn.active {
+  background: var(--red);
+  border-color: var(--red);
+  color: white;
+}
+
+/* =============================================
+   СПИСОК ВОПРОСОВ — СОРТИРОВКА
+   ============================================= */
+.list-sort-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--gray-border);
+}
+
+.sort-label {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sort-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--gray-border);
+  background: white;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+}
+
+.sort-btn:hover {
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.sort-btn.active {
+  background: var(--gray);
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+/* =============================================
+   СПИСОК ВОПРОСОВ — ЭЛЕМЕНТЫ С КНОПКАМИ
+   ============================================= */
+.q-list-scroll {
+  max-height: 520px;
+  overflow-y: auto;
+}
+
+/* Переопределяем q-item для режима с кнопками */
+.q-item {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--gray-border);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.q-item:last-child {
+  border-bottom: none;
+}
+
+.q-text-wrap {
+  flex: 1;
+  font-size: 14px;
+  line-height: 1.4;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.q-text-wrap:hover {
+  color: var(--red);
+}
+
+.q-err-flag {
+  color: #e6a800;
+  margin-left: 5px;
+  font-size: 12px;
+}
+
+.q-rate-ok  { background: var(--green-bg); color: var(--green); }
+.q-rate-mid { background: #fffbec;         color: #b37a00; }
+.q-rate-bad { background: var(--red-bg);   color: var(--red-dark); }
+
+.q-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.q-edit-btn,
+.q-del-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 7px;
+  font-size: 15px;
+  cursor: pointer;
+  line-height: 1;
+  transition: all 0.15s;
+}
+
+.q-edit-btn:hover {
+  background: #f0f8ff;
+  border-color: #99c;
+}
+
+.q-del-btn:hover {
+  background: var(--red-bg);
+  border-color: var(--red);
+}
+
+/* =============================================
    OCR — ЗАГРУЗКА ФАЙЛОВ
    ============================================= */
 .ocr-loading-info {

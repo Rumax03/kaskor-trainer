@@ -190,9 +190,9 @@ function showScreen(id) {
 
   currentScreen = id;
 
-  if (id === 'screenList')  renderList();
-  if (id === 'screenHome')  updateStats();
-  if (id === 'screenStats') renderStats();
+  if (id === 'screenList')         renderList();
+  if (id === 'screenHome')         updateStats();
+  if (id === 'screenStats')        renderStats();
   if (id === 'screenOCR') {
     ocrReset();
     setHeader('Загрузить скриншот', 'Распознавание текста (OCR)');
@@ -408,16 +408,86 @@ function showToast(msg, type, duration) {
 }
 
 // =============================================
-// СПИСОК ВОПРОСОВ
+// СПИСОК ВОПРОСОВ — ФИЛЬТР / СОРТИРОВКА
 // =============================================
 
-function renderList() {
-  const qs        = getQuestions();
-  const container = document.getElementById('questionListContainer');
-  document.getElementById('listCount').textContent = qs.length + ' вопр.';
-  setHeader('База вопросов', qs.length + ' вопросов');
+let listFilter = 'all';
+let listSort   = 'num';
 
-  if (!qs.length) {
+function setListFilter(filter) {
+  listFilter = filter;
+  document.querySelectorAll('.filter-btn').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.filter === filter)
+  );
+  renderList();
+}
+
+function setListSort(sort) {
+  listSort = sort;
+  document.querySelectorAll('.sort-btn').forEach(btn =>
+    btn.classList.toggle('active', btn.dataset.sort === sort)
+  );
+  renderList();
+}
+
+function renderList() {
+  const allQs    = getQuestions();
+  const errorIds = getErrorIds();
+  const qstats   = getQStats();
+
+  const query = (document.getElementById('listSearch')?.value || '').trim().toLowerCase();
+
+  // Поиск
+  let qs = allQs.filter(q => {
+    if (!query) return true;
+    return q.question.toLowerCase().includes(query) ||
+           (q.explanation || '').toLowerCase().includes(query) ||
+           q.options.some(o => o.toLowerCase().includes(query));
+  });
+
+  // Фильтр
+  if (listFilter === 'errors') {
+    qs = qs.filter(q => errorIds.includes(q.id));
+  } else if (listFilter === 'nostats') {
+    qs = qs.filter(q => {
+      const s = qstats[q.id];
+      return !s || (s.correctCount + s.wrongCount) === 0;
+    });
+  } else if (listFilter === 'unlearned') {
+    qs = qs.filter(q => {
+      const s = qstats[q.id];
+      if (!s || (s.correctCount + s.wrongCount) === 0) return true;
+      return s.correctCount / (s.correctCount + s.wrongCount) < 0.8;
+    });
+  }
+
+  // Сортировка
+  if (listSort === 'errors') {
+    qs = [...qs].sort((a, b) => {
+      const sa = qstats[a.id], sb = qstats[b.id];
+      const ra = sa && (sa.correctCount + sa.wrongCount) > 0
+        ? sa.wrongCount / (sa.correctCount + sa.wrongCount) : -1;
+      const rb = sb && (sb.correctCount + sb.wrongCount) > 0
+        ? sb.wrongCount / (sb.correctCount + sb.wrongCount) : -1;
+      return rb - ra;
+    });
+  } else if (listSort === 'correct') {
+    qs = [...qs].sort((a, b) => {
+      const ca = qstats[a.id]?.correctCount || 0;
+      const cb = qstats[b.id]?.correctCount || 0;
+      return cb - ca;
+    });
+  }
+
+  const total = allQs.length;
+  const shown = qs.length;
+  document.getElementById('listCount').textContent =
+    shown < total ? `${shown} из ${total}` : `${total} вопр.`;
+  setHeader('База вопросов', total + ' вопросов');
+
+  const container = document.getElementById('questionListContainer');
+
+  if (!allQs.length) {
     container.innerHTML = `
       <div class="empty-state">
         <div class="icon">📋</div>
@@ -426,25 +496,170 @@ function renderList() {
     return;
   }
 
-  const errorIds = getErrorIds();
-  const qstats   = getQStats();
+  if (!qs.length) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <div class="icon">🔍</div>
+        <p>Ничего не найдено.<br>Попробуйте другой запрос или фильтр.</p>
+      </div>`;
+    return;
+  }
+
   const ul = document.createElement('ul');
   ul.className = 'q-list';
 
   qs.forEach((q, i) => {
-    const li    = document.createElement('li');
-    li.className = 'q-item';
-    const flag  = errorIds.includes(q.id) ? ' ⚠️' : '';
-    const s     = qstats[q.id];
-    const rate  = s && (s.correctCount + s.wrongCount) > 0
-      ? ` <span class="q-rate">${Math.round(s.correctCount / (s.correctCount + s.wrongCount) * 100)}%</span>`
+    const li       = document.createElement('li');
+    li.className   = 'q-item';
+    const hasError = errorIds.includes(q.id);
+    const s        = qstats[q.id];
+    const total_s  = s ? s.correctCount + s.wrongCount : 0;
+    const pct      = total_s > 0
+      ? Math.round(s.correctCount / total_s * 100) : null;
+
+    const rateBadge = pct !== null
+      ? `<span class="q-rate ${pct < 50 ? 'q-rate-bad' : pct < 80 ? 'q-rate-mid' : 'q-rate-ok'}">${pct}%</span>`
       : '';
-    li.innerHTML = `<span class="q-num">${i + 1}.</span><span>${q.question}${flag}${rate}</span>`;
+    const errFlag = hasError ? '<span class="q-err-flag">⚠</span>' : '';
+
+    li.innerHTML = `
+      <span class="q-num">${i + 1}.</span>
+      <span class="q-text-wrap" onclick="openEditQuestion('${q.id}')">${q.question}${errFlag}${rateBadge}</span>
+      <div class="q-actions">
+        <button type="button" class="q-edit-btn" onclick="openEditQuestion('${q.id}')" title="Редактировать">✏️</button>
+        <button type="button" class="q-del-btn"  onclick="deleteQuestion('${q.id}')"  title="Удалить">🗑️</button>
+      </div>`;
     ul.appendChild(li);
   });
 
   container.innerHTML = '';
   container.appendChild(ul);
+}
+
+// =============================================
+// РЕДАКТИРОВАНИЕ ВОПРОСА
+// =============================================
+
+let editingQuestionId = null;
+
+function openEditQuestion(id) {
+  const q = getQuestions().find(q => q.id === id);
+  if (!q) return;
+  editingQuestionId = id;
+
+  document.getElementById('editQuestion').value    = q.question;
+  document.getElementById('editExplanation').value = q.explanation || '';
+  document.getElementById('editMsg').innerHTML     = '';
+
+  editBuildOptions(q.options, q.correct);
+  setHeader('Редактировать вопрос', '');
+  showScreen('screenEditQuestion');
+}
+
+function editBuildOptions(options, correctIdx) {
+  const ed = document.getElementById('editOptionsEditor');
+  ed.innerHTML = '';
+  const opts = options && options.length ? options : ['', '', ''];
+  opts.forEach((opt, i) => editAddOptionRow(opt, i === correctIdx));
+  editUpdateCorrectHint();
+}
+
+function editAddOption() { editAddOptionRow('', false); }
+
+function editAddOptionRow(text, checked) {
+  const ed      = document.getElementById('editOptionsEditor');
+  const idx     = ed.children.length;
+  const letters = ['А', 'Б', 'В', 'Г', 'Д'];
+  const label   = letters[idx] !== undefined ? letters[idx] : String(idx + 1);
+  const row = document.createElement('div');
+  row.className = 'option-row';
+  row.innerHTML = `
+    <span class="opt-label">${label}.</span>
+    <input type="radio" name="editCorrect" value="${idx}" ${checked ? 'checked' : ''}
+           onchange="editUpdateCorrectHint()">
+    <input type="text" value="${(text || '').replace(/"/g, '&quot;')}" placeholder="Вариант ответа…"
+           oninput="editRenumberOptions()">
+    <button type="button" class="btn-del-opt" title="Удалить"
+            onclick="editRemoveOption(this)">✕</button>`;
+  ed.appendChild(row);
+  editUpdateCorrectHint();
+}
+
+function editRemoveOption(btn) {
+  btn.closest('.option-row').remove();
+  editRenumberOptions();
+  editUpdateCorrectHint();
+}
+
+function editRenumberOptions() {
+  const letters = ['А', 'Б', 'В', 'Г', 'Д'];
+  document.querySelectorAll('#editOptionsEditor .option-row').forEach((row, i) => {
+    row.querySelector('.opt-label').textContent =
+      (letters[i] !== undefined ? letters[i] : String(i + 1)) + '.';
+    row.querySelector('input[type="radio"]').value = i;
+  });
+}
+
+function editUpdateCorrectHint() {
+  const checked = document.querySelector('#editOptionsEditor input[type="radio"]:checked');
+  const hint    = document.getElementById('editCorrectHint');
+  if (!checked) {
+    hint.innerHTML = 'Правильный ответ: <span>не выбран — отметьте кружком</span>';
+    return;
+  }
+  const text = checked.closest('.option-row').querySelector('input[type="text"]').value.trim();
+  hint.innerHTML = `Правильный ответ: <span>${text || '(пусто)'}</span>`;
+}
+
+function saveEditQuestion() {
+  const msgEl    = document.getElementById('editMsg');
+  const question = document.getElementById('editQuestion').value.trim();
+  if (!question) { showMsg(msgEl, 'Введите текст вопроса.', 'error'); return; }
+
+  const rows    = document.querySelectorAll('#editOptionsEditor .option-row');
+  const options = Array.from(rows).map(r => r.querySelector('input[type="text"]').value.trim());
+  if (options.length < 2)    { showMsg(msgEl, 'Нужно минимум 2 варианта ответа.', 'error'); return; }
+  if (options.some(o => !o)) { showMsg(msgEl, 'Заполните все варианты ответа.', 'error'); return; }
+
+  const checkedRadio = document.querySelector('#editOptionsEditor input[type="radio"]:checked');
+  if (!checkedRadio) { showMsg(msgEl, 'Выберите правильный ответ.', 'error'); return; }
+
+  const correct     = parseInt(checkedRadio.value);
+  const explanation = document.getElementById('editExplanation').value.trim();
+
+  const qs  = getQuestions();
+  const idx = qs.findIndex(q => q.id === editingQuestionId);
+  if (idx === -1) { showMsg(msgEl, 'Вопрос не найден в базе.', 'error'); return; }
+
+  // Проверка дублей (исключая сам вопрос)
+  const others = qs.filter(q => q.id !== editingQuestionId);
+  if (isDuplicate(question, others)) {
+    showMsg(msgEl, '⚠ Такой вопрос уже есть в базе.', 'error');
+    return;
+  }
+
+  qs[idx] = { ...qs[idx], question, options, correct, explanation };
+  saveQuestionsToStorage(qs);
+
+  showMsg(msgEl, '✓ Сохранено!', 'success');
+  setTimeout(() => goBack(), 700);
+}
+
+function deleteQuestion(id) {
+  if (!confirm('Удалить этот вопрос из базы?')) return;
+
+  saveQuestionsToStorage(getQuestions().filter(q => q.id !== id));
+
+  const newErrorIds = getErrorIds().filter(eid => eid !== id);
+  localStorage.setItem(ERRORS_KEY, JSON.stringify(newErrorIds));
+
+  const qs = getQStats();
+  delete qs[id];
+  saveQStats(qs);
+
+  updateStats();
+  renderList();
+  showToast('Вопрос удалён.', 'info');
 }
 
 // =============================================
